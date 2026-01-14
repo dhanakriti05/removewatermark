@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro PDF Batch Remover & Merger</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <style>
+        /* Shared Styles from your previous version */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #434343 0%, #000000 100%); min-height: 100vh; padding: 20px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 15px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); overflow: hidden; }
+        .header { background: #222; color: white; padding: 20px; text-align: center; }
+        .content { padding: 30px; display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+        
+        /* New File List Sidebar */
+        .file-sidebar { background: #f4f4f9; padding: 15px; border-radius: 10px; border: 1px solid #ddd; height: 600px; overflow-y: auto; }
+        .file-item { padding: 10px; background: white; margin-bottom: 8px; border-radius: 5px; font-size: 0.85em; border-left: 4px solid #667eea; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* UI Elements */
+        .upload-section { grid-column: 1 / span 2; border: 3px dashed #667eea; border-radius: 10px; padding: 30px; text-align: center; background: #f8f9ff; cursor: pointer; }
+        .controls { background: #fff; padding: 20px; border: 1px solid #eee; border-radius: 10px; }
+        .btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: 600; margin: 5px; }
+        .btn-merge { background: #27ae60; }
+        .btn:disabled { background: #ccc; }
+        
+        .canvas-container { display: flex; gap: 10px; margin-top: 20px; }
+        canvas { width: 100%; border: 1px solid #ccc; background: #eee; }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 0.9em; font-weight: bold; margin-bottom: 5px; }
+        input[type="range"] { width: 100%; }
+        
+        .status-badge { font-size: 0.7em; padding: 2px 5px; border-radius: 3px; background: #e0e0e0; }
+        .status-done { background: #27ae60; color: white; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>Batch PDF Tools</h1>
+        <p>Remove Watermarks, Headers, Footers & Merge Multiple Files</p>
+    </div>
+
+    <div class="content">
+        <div class="upload-section" id="dropZone">
+            <div style="font-size: 2em;">📁</div>
+            <h3>Click or Drag PDF Files/Folders</h3>
+            <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
+            <button class="btn" onclick="document.getElementById('fileInput').click()">Select Files</button>
+        </div>
+
+        <div class="file-sidebar">
+            <h4>Queue (<span id="fileCount">0</span>)</h4>
+            <div id="fileList"></div>
+        </div>
+
+        <div class="main-area">
+            <div class="controls">
+                <div class="control-group">
+                    <label>Watermark Sensitivity: <span id="v-intensity">70</span>%</label>
+                    <input type="range" id="intensity" min="0" max="100" value="70">
+                </div>
+
+                <div style="display: flex; gap: 20px;">
+                    <div class="control-group" style="flex:1">
+                        <label>Header Crop (%): <span id="v-header">0</span>%</label>
+                        <input type="range" id="headerHeight" min="0" max="25" value="0">
+                    </div>
+                    <div class="control-group" style="flex:1">
+                        <label>Footer Crop (%): <span id="v-footer">0</span>%</label>
+                        <input type="range" id="footerHeight" min="0" max="25" value="0">
+                    </div>
+                </div>
+
+                <div style="text-align: center; border-top: 1px solid #eee; pt: 15px;">
+                    <button class="btn" id="btnProcess" onclick="processAll()">🚀 Process All Files</button>
+                    <button class="btn btn-merge" id="btnMerge" onclick="mergeAndDownload()" disabled>🔗 Merge & Download One PDF</button>
+                    <button class="btn" onclick="location.reload()" style="background:#e74c3c">Clear All</button>
+                </div>
+            </div>
+
+            <div id="previewArea" style="display:none">
+                <div style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center;">
+                    <strong>Live Preview (Current File)</strong>
+                    <div id="pageNav">
+                        <button onclick="changePage(-1)">Prev</button>
+                        <span id="pageInfo">Page 1</span>
+                        <button onclick="changePage(1)">Next</button>
+                    </div>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="outCanvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    let fileQueue = [];
+    let currentFileIdx = 0;
+    let currentPage = 1;
+
+    // UI Listeners
+    document.getElementById('intensity').oninput = (e) => { document.getElementById('v-intensity').textContent = e.target.value; updatePreview(); };
+    document.getElementById('headerHeight').oninput = (e) => { document.getElementById('v-header').textContent = e.target.value; updatePreview(); };
+    document.getElementById('footerHeight').oninput = (e) => { document.getElementById('v-footer').textContent = e.target.value; updatePreview(); };
+
+    const fileInput = document.getElementById('fileInput');
+    fileInput.onchange = (e) => handleFiles(e.target.files);
+
+    async function handleFiles(files) {
+        for (let file of files) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+            fileQueue.push({
+                name: file.name,
+                data: arrayBuffer,
+                pdf: pdf,
+                processedPages: [], // Stores processed ImageData
+                status: 'pending'
+            });
+        }
+        renderFileList();
+        if (fileQueue.length > 0) {
+            document.getElementById('previewArea').style.display = 'block';
+            updatePreview();
+        }
+    }
+
+    function renderFileList() {
+        const list = document.getElementById('fileList');
+        list.innerHTML = '';
+        fileQueue.forEach((f, i) => {
+            list.innerHTML += `
+                <div class="file-item" style="${i === currentFileIdx ? 'background:#e8eaff' : ''}">
+                    <span>${f.name.substring(0,20)}...</span>
+                    <span class="status-badge ${f.status === 'done' ? 'status-done' : ''}">${f.status}</span>
+                </div>
+            `;
+        });
+        document.getElementById('fileCount').textContent = fileQueue.length;
+    }
+
+    async function updatePreview() {
+        if (!fileQueue[currentFileIdx]) return;
+        const fileObj = fileQueue[currentFileIdx];
+        const page = await fileObj.pdf.getPage(currentPage);
+        const viewport = page.getViewport({scale: 1.0});
+        
+        const canvas = document.getElementById('outCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        await page.render({canvasContext: ctx, viewport: viewport}).promise;
+        
+        // Apply processing logic to preview
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        applyFilters(imgData);
+        ctx.putImageData(imgData, 0, 0);
+        
+        document.getElementById('pageInfo').textContent = `File ${currentFileIdx + 1} - Page ${currentPage}`;
+    }
+
+    function applyFilters(imageData) {
+        const data = imageData.data;
+        const intensity = parseInt(document.getElementById('intensity').value) / 100;
+        const headPct = parseInt(document.getElementById('headerHeight').value) / 100;
+        const footPct = parseInt(document.getElementById('footerHeight').value) / 100;
+        const h = imageData.height;
+        const w = imageData.width;
+
+        for (let i = 0; i < data.length; i += 4) {
+            const y = Math.floor((i / 4) / w);
+            
+            // 1. Header/Footer White-out
+            if (y < h * headPct || y > h * (1 - footPct)) {
+                data[i] = data[i+1] = data[i+2] = 255;
+                continue;
+            }
+
+            // 2. Watermark Removal (Brightness threshold)
+            const brightness = (data[i] + data[i+1] + data[i+2]) / 3;
+            if (brightness > 255 * (1 - (intensity * 0.3))) {
+                data[i] = data[i+1] = data[i+2] = 255;
+            }
+        }
+    }
+
+    async function processAll() {
+        const btn = document.getElementById('btnProcess');
+        btn.disabled = true;
+        btn.textContent = "Processing...";
+
+        for (let fIdx = 0; fIdx < fileQueue.length; fIdx++) {
+            const fileObj = fileQueue[fIdx];
+            fileObj.processedPages = [];
+            
+            for (let pNum = 1; pNum <= fileObj.pdf.numPages; pNum++) {
+                const page = await fileObj.pdf.getPage(pNum);
+                const viewport = page.getViewport({scale: 1.5}); // Higher quality for output
+                
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = viewport.width;
+                offCanvas.height = viewport.height;
+                const ctx = offCanvas.getContext('2d');
+                
+                await page.render({canvasContext: ctx, viewport: viewport}).promise;
+                const imgData = ctx.getImageData(0, 0, offCanvas.width, offCanvas.height);
+                applyFilters(imgData);
+                ctx.putImageData(imgData, 0, 0);
+                
+                fileObj.processedPages.push(offCanvas.toDataURL('image/jpeg', 0.85));
+            }
+            fileObj.status = 'done';
+            renderFileList();
+        }
+
+        btn.textContent = "Done!";
+        document.getElementById('btnMerge').disabled = false;
+    }
+
+    async function mergeAndDownload() {
+        const mergedPdf = await PDFLib.PDFDocument.create();
+
+        for (const fileObj of fileQueue) {
+            for (const imgDataUri of fileObj.processedPages) {
+                const img = await mergedPdf.embedJpg(imgDataUri);
+                const page = mergedPdf.addPage([img.width, img.height]);
+                page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+            }
+        }
+
+        const pdfBytes = await mergedPdf.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = "merged_and_cleaned.pdf";
+        link.click();
+    }
+
+    function changePage(dir) {
+        currentPage += dir;
+        if (currentPage < 1) currentPage = 1;
+        updatePreview();
+    }
+</script>
+</body>
+</html>
